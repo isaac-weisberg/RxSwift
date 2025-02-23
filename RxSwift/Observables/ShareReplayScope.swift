@@ -166,13 +166,14 @@ private final class ShareReplay1WhileConnectedConnection<Element>
     private let parent: Parent
     private let subscription = SingleAssignmentDisposable()
 
-    private let lock = RecursiveLock()
+    private let lock: RecursiveLock
     private var disposed: Bool = false
     fileprivate var observers = Observers()
     private var element: Element?
 
-    init(parent: Parent) {
+    init(parent: Parent, lock: RecursiveLock) {
         self.parent = parent
+        self.lock = lock
 
         #if TRACE_RESOURCES
             _ = Resources.incrementTotal()
@@ -209,11 +210,13 @@ private final class ShareReplay1WhileConnectedConnection<Element>
             self.observers.insert(observer.on)
         }
         
+        return SubscriptionDisposable(owner: self, key: disposeKey)
+    }
+        
+    func replayStoredElementIfNeeded<Observer: ObserverType>(_ observer: Observer) where Observer.Element == Element {
         if let element = self.element {
             observer.on(.next(element))
         }
-        
-        return SubscriptionDisposable(owner: self, key: disposeKey)
     }
 
     final private func synchronized_dispose() {
@@ -273,9 +276,10 @@ final private class ShareReplay1WhileConnected<Element>
         let connection = self.synchronized_subscribe(observer)
         let count = connection.observers.count
 
-        self.lock.unlock()
         let disposable = connection.synchronized_subscribe(observer)
+        self.lock.unlock()
         
+        connection.replayStoredElementIfNeeded(observer)
         
         if count == 0 {
             connection.connect()
@@ -292,7 +296,7 @@ final private class ShareReplay1WhileConnected<Element>
             connection = existingConnection
         }
         else {
-            connection = ShareReplay1WhileConnectedConnection<Element>(parent: self)
+            connection = ShareReplay1WhileConnectedConnection<Element>(parent: self, lock: lock)
             self.connection = connection
         }
 
