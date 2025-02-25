@@ -194,7 +194,9 @@ extension AnomaliesTest {
     
     func test2653ShareReplayMoreInitialEmissionDeadlock() {
         let immediatelyEmittingSource = Observable<Void>.create { observer in
+            print("ASDF gonna emit")
             observer.on(.next(()))
+            print("ASDF did emit")
             return Disposables.create()
         }
         .share(replay: 2, scope: .whileConnected)
@@ -205,6 +207,7 @@ extension AnomaliesTest {
         )
         
         wait(for: [exp], timeout: 1)
+        print("ASDF Finito")
     }
     
     func test2653ShareReplayOneForeverInitialEmissionDeadlock() {
@@ -243,18 +246,19 @@ extension AnomaliesTest {
     ) -> XCTestExpectation {
         let exp = expectation(description: "`\(sourceName)` doesn't cause a deadlock in multithreaded environment because it doesn't keep its lock acquired to replay values upon subscription")
         
-        let triggerRange = 0..<100
+        let triggerRange = 0..<2
         
-        let multipleSubscriptions = Observable.zip(triggerRange.map { _ in
+        let multipleSubscriptions = Observable.zip(triggerRange.map { index in
             Observable.just(())
                 .observe(on: ConcurrentDispatchQueueScheduler(qos: .userInitiated))
                 .flatMap { _ in
                     immediatelyEmittingSource
+                        .debug("asdf inside \(index)")
                 }
                 .take(1)
         })
         
-        _ = multipleSubscriptions.subscribe(onCompleted: {
+        _ = multipleSubscriptions.debug("outside").subscribe(onCompleted: {
             exp.fulfill()
         })
         

@@ -469,7 +469,9 @@ private class MergeSink<SourceElement, SourceSequence: ObservableConvertibleType
         switch event {
         case .next(let element):
             if let value = self.nextElementArrived(element: element) {
+                print("ASDF flamap will sub inner")
                 self.subscribeInner(value.asObservable())
+                print("ASDF flamap did sub inner")
             }
         case .error(let error):
             self.lock.performLocked {

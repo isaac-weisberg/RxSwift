@@ -270,9 +270,13 @@ final private class RefCountSink<ConnectableSource: ConnectableObservableType, O
 
         if self.parent.count == 0 {
             self.parent.count = 1
+            
+            print("ASDF will connect")
             self.parent.connectableSubscription = self.parent.source.connect()
+            print("ASDF did connect")
         }
         else {
+            print("ASDF incrementing count")
             self.parent.count += 1
         }
 

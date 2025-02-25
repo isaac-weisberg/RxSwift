@@ -407,9 +407,8 @@ final private class ShareWhileConnected<Element>
         self.lock.lock()
         let connection = self.synchronized_subscribe(observer)
         let count = connection.observers.count
-
-        self.lock.unlock()
         let disposable = connection.synchronized_subscribe(observer)
+        self.lock.unlock()
 
         if count == 0 {
             connection.connect()
