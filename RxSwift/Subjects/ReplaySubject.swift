@@ -108,6 +108,7 @@ private class ReplayBufferBase<Element>
     }
     
     override func on(_ event: Event<Element>) {
+        print("ReplayBufferBase on, observersCount \(observers.count)")
         #if DEBUG
             self.synchronizationTracker.register(synchronizationErrorMessage: .default)
             defer { self.synchronizationTracker.unregister() }
@@ -225,10 +226,12 @@ private class ReplayManyBase<Element>: ReplayBufferBase<Element> {
     }
     
     override func addValueToBuffer(_ value: Element) {
+        print("ASDF ReplayManyBase addValueToBuffer")
         self.queue.enqueue(value)
     }
 
     override func replayBuffer<Observer: ObserverType>(_ observer: Observer) where Observer.Element == Element {
+        print("ASDF ReplayManyBase replaying buffer, \(queue.count)")
         for item in self.queue {
             observer.on(.next(item))
         }

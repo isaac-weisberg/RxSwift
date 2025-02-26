@@ -194,9 +194,9 @@ extension AnomaliesTest {
     
     func test2653ShareReplayMoreInitialEmissionDeadlock() {
         let immediatelyEmittingSource = Observable<Void>.create { observer in
-            print("ASDF gonna emit")
+            print("ASDF test gonna emit")
             observer.on(.next(()))
-            print("ASDF did emit")
+            print("ASDF test did emit")
             return Disposables.create()
         }
         .share(replay: 2, scope: .whileConnected)

@@ -166,6 +166,7 @@ final private class Connection<Subject: SubjectType>: ObserverType, Disposable {
     }
 
     func on(_ event: Event<Subject.Observer.Element>) {
+        print("ASDF Connection on")
         if isFlagSet(self.disposed, 1) {
             return
         }
@@ -176,6 +177,7 @@ final private class Connection<Subject: SubjectType>: ObserverType, Disposable {
     }
 
     func dispose() {
+        print("ASDF Connection dispose")
         lock.lock(); defer { lock.unlock() }
         fetchOr(self.disposed, 1)
         guard let parent = self.parent else {
@@ -229,17 +231,21 @@ final private class ConnectableObservableAdapter<Subject: SubjectType>
     }
 
     private var lazySubject: Subject {
+        lock.lock(); defer { lock.unlock() }
         if let subject = self.subject {
+            print("ASDF ConnectableObservableAdapter reusing subj")
             return subject
         }
 
+        print("ASDF ConnectableObservableAdapter making subj")
         let subject = self.makeSubject()
         self.subject = subject
         return subject
     }
 
     override func subscribe<Observer: ObserverType>(_ observer: Observer) -> Disposable where Observer.Element == Subject.Element {
-        self.lazySubject.subscribe(observer)
+        print("ASDF ConnectableObservableAdapter will sub")
+        return self.lazySubject.subscribe(observer)
     }
 }
 
@@ -259,6 +265,7 @@ final private class RefCountSink<ConnectableSource: ConnectableObservableType, O
     }
 
     func run() -> Disposable {
+        print("ASDF inside refcount, will sub source")
         let subscription = self.parent.source.subscribe(self)
         self.parent.lock.lock(); defer { self.parent.lock.unlock() }
 
@@ -271,12 +278,12 @@ final private class RefCountSink<ConnectableSource: ConnectableObservableType, O
         if self.parent.count == 0 {
             self.parent.count = 1
             
-            print("ASDF will connect")
+            print("ASDF inside refcount, will connect")
             self.parent.connectableSubscription = self.parent.source.connect()
-            print("ASDF did connect")
+            print("ASDF inside refcount, did connect")
         }
         else {
-            print("ASDF incrementing count")
+            print("ASDF inside refcount, no connect, just incrementing count")
             self.parent.count += 1
         }
 
@@ -291,11 +298,13 @@ final private class RefCountSink<ConnectableSource: ConnectableObservableType, O
                 guard let connectableSubscription = self.parent.connectableSubscription else {
                     return
                 }
-
+                
+                print("ASDF RefCount gonna dispose of source connectable")
                 connectableSubscription.dispose()
                 self.parent.connectableSubscription = nil
             }
             else if self.parent.count > 1 {
+                print("ASDF RefCount gonna decrement source connectable")
                 self.parent.count -= 1
             }
             else {

@@ -121,6 +121,7 @@ final private class ZipCollectionTypeSink<Collection: Swift.Collection, Observer
                 self.dispose()
             }
             else {
+                print("ASDF zip will dispose of \(atIndex)")
                 self.subscriptions[atIndex].dispose()
             }
         }
