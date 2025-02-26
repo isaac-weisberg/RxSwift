@@ -133,12 +133,12 @@ final private class ZipCollectionTypeSink<Collection: Swift.Collection, Observer
             let index = j
             let source = i.asObservable()
 
-            print("ASDF zip gonna sub")
+//            print("ASDF zip gonna sub")
             let disposable = source.subscribe(AnyObserver { event in
                 self.on(event, atIndex: index)
                 })
             self.subscriptions[j].setDisposable(disposable)
-            print("ASDF zip did sub")
+//            print("ASDF zip did sub")
             j += 1
         }
 

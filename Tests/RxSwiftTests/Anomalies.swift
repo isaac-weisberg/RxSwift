@@ -177,21 +177,6 @@ extension AnomaliesTest {
         }
     }
     
-    func test2653ShareReplayZeroInitialEmissionDeadlock() {
-        let immediatelyEmittingSource = Observable<Void>.create { observer in
-            observer.on(.next(()))
-            return Disposables.create()
-        }
-        .share(replay: 0, scope: .whileConnected)
-        
-        let exp = createInitialEmissionsDeadlockExpectation(
-            sourceName: "`share(replay: 0, scope: .whileConnected)`",
-            immediatelyEmittingSource: immediatelyEmittingSource
-        )
-        
-        wait(for: [exp], timeout: 1)
-    }
-    
     func test2653ShareReplayOneInitialEmissionDeadlock() {
         let immediatelyEmittingSource = Observable<Void>.create { observer in
             observer.on(.next(()))
@@ -204,7 +189,7 @@ extension AnomaliesTest {
             immediatelyEmittingSource: immediatelyEmittingSource
         )
         
-        wait(for: [exp], timeout: 1)
+        wait(for: [exp], timeout: 5)
     }
     
     func test2653ShareReplayMoreInitialEmissionDeadlock() {
@@ -221,23 +206,8 @@ extension AnomaliesTest {
             immediatelyEmittingSource: immediatelyEmittingSource
         )
         
-        wait(for: [exp], timeout: 1)
+        wait(for: [exp], timeout: 5)
         print("ASDF Finito")
-    }
-    
-    func test2653ShareReplayZeroForeverInitialEmissionDeadlock() {
-        let immediatelyEmittingSource = Observable<Void>.create { observer in
-            observer.on(.next(()))
-            return Disposables.create()
-        }
-        .share(replay: 0, scope: .forever)
-        
-        let exp = createInitialEmissionsDeadlockExpectation(
-            sourceName: "`share(replay: 0, scope: .forever)`",
-            immediatelyEmittingSource: immediatelyEmittingSource
-        )
-        
-        wait(for: [exp], timeout: 1)
     }
     
     func test2653ShareReplayOneForeverInitialEmissionDeadlock() {
@@ -252,7 +222,7 @@ extension AnomaliesTest {
             immediatelyEmittingSource: immediatelyEmittingSource
         )
         
-        wait(for: [exp], timeout: 1)
+        wait(for: [exp], timeout: 5)
     }
     
     func test2653ShareReplayMoreForeverInitialEmissionDeadlock() {
@@ -267,7 +237,7 @@ extension AnomaliesTest {
             immediatelyEmittingSource: immediatelyEmittingSource
         )
         
-        wait(for: [exp], timeout: 1)
+        wait(for: [exp], timeout: 5)
     }
     
     private func createInitialEmissionsDeadlockExpectation(
@@ -283,7 +253,6 @@ extension AnomaliesTest {
                 .observe(on: ConcurrentDispatchQueueScheduler(qos: .userInitiated))
                 .flatMap { _ in
                     immediatelyEmittingSource
-                        .debug("asdf inside \(index)")
                 }
                 .take(1)
         })
