@@ -6,6 +6,9 @@
 //  Copyright © 2015 Krunoslav Zaher. All rights reserved.
 //
 
+import Dispatch
+import Foundation
+
 /**
  Represents an observable wrapper that can be connected and disconnected from its underlying observable sequence.
  */
@@ -150,19 +153,52 @@ public extension ObservableType {
 private final class Connection<Subject: SubjectType>: ObserverType, Disposable {
     typealias Element = Subject.Observer.Element
 
-    private var lock: RecursiveLock
+    fileprivate enum ConnectBehavior {
+        case waitForSubscriptionStart
+        case useExisting
+        case waitForDisconnect
+        case retry
+    }
+
+    private enum State {
+        case waitingForSubscriptionStart
+        case subscribing
+        case connected
+        case disconnecting
+        case disposed
+    }
+
+    private enum DisposeAction {
+        case none
+        case finalizeWithoutSubscription
+        case awaitSubscription
+        case disposeSubscription(Disposable?)
+    }
+
+    private let lock: RecursiveLock
+    private let stateLock = RecursiveLock()
+    // Lets racing connect calls wait until the initial subscribe attempt has either started or been cancelled.
+    private let subscriptionStarted = DispatchGroup()
+    // Lets reconnects wait until the previous upstream subscription has been fully torn down.
+    private let disconnected = DispatchGroup()
+
     // state
     private var parent: ConnectableObservableAdapter<Subject>?
     private var subscription: Disposable?
-    private var subjectObserver: Subject.Observer
+    private let subjectObserver: Subject.Observer
+    private var state = State.waitingForSubscriptionStart
+    private var disconnectingThread: Thread?
+    private var didSignalSubscriptionStart = false
+    private var didSignalDisconnect = false
 
     private let disposed = AtomicInt(0)
 
-    init(parent: ConnectableObservableAdapter<Subject>, subjectObserver: Subject.Observer, lock: RecursiveLock, subscription: Disposable) {
+    init(parent: ConnectableObservableAdapter<Subject>, subjectObserver: Subject.Observer, lock: RecursiveLock) {
         self.parent = parent
-        self.subscription = subscription
         self.lock = lock
         self.subjectObserver = subjectObserver
+        subscriptionStarted.enter()
+        disconnected.enter()
     }
 
     func on(_ event: Event<Subject.Observer.Element>) {
@@ -175,21 +211,163 @@ private final class Connection<Subject: SubjectType>: ObserverType, Disposable {
         subjectObserver.on(event)
     }
 
+    func connectBehavior() -> ConnectBehavior {
+        stateLock.performLocked {
+            switch state {
+            case .waitingForSubscriptionStart:
+                return .waitForSubscriptionStart
+            case .subscribing, .connected:
+                return .useExisting
+            case .disconnecting:
+                return .waitForDisconnect
+            case .disposed:
+                return .retry
+            }
+        }
+    }
+
+    func isDisconnectingOnCurrentThread() -> Bool {
+        stateLock.performLocked {
+            disconnectingThread === Thread.current
+        }
+    }
+
+    func waitUntilSubscriptionStarts() {
+        subscriptionStarted.wait()
+    }
+
+    func waitUntilDisconnected() {
+        disconnected.wait()
+    }
+
+    func beginSubscription() -> Bool {
+        let (shouldSubscribe, shouldSignalSubscriptionStart) = stateLock.performLocked { () -> (Bool, Bool) in
+            switch state {
+            case .waitingForSubscriptionStart:
+                state = .subscribing
+                return (true, signalSubscriptionStartIfNeededLocked())
+            case .disconnecting, .disposed:
+                return (false, signalSubscriptionStartIfNeededLocked())
+            case .subscribing, .connected:
+                rxFatalError("Subscription already started")
+            }
+        }
+
+        if shouldSignalSubscriptionStart {
+            subscriptionStarted.leave()
+        }
+
+        return shouldSubscribe
+    }
+
+    func setSubscription(_ subscription: Disposable) -> Disposable? {
+        stateLock.performLocked {
+            switch state {
+            case .subscribing:
+                self.subscription = subscription
+                state = .connected
+                return nil
+            case .disconnecting, .disposed:
+                return subscription
+            case .waitingForSubscriptionStart, .connected:
+                rxFatalError("Subscription set in invalid state")
+            }
+        }
+    }
+
     func dispose() {
-        lock.lock(); defer { lock.unlock() }
-        fetchOr(disposed, 1)
-        guard let parent else {
+        let action = stateLock.performLocked { () -> DisposeAction in
+            fetchOr(disposed, 1)
+            switch state {
+            case .waitingForSubscriptionStart:
+                state = .disconnecting
+                disconnectingThread = Thread.current
+                return .finalizeWithoutSubscription
+            case .subscribing:
+                state = .disconnecting
+                disconnectingThread = Thread.current
+                return .awaitSubscription
+            case .connected:
+                state = .disconnecting
+                disconnectingThread = Thread.current
+                let subscription = self.subscription
+                self.subscription = nil
+                return .disposeSubscription(subscription)
+            case .disconnecting, .disposed:
+                return .none
+            }
+        }
+
+        switch action {
+        case .awaitSubscription:
+            // If disposal happens before source.subscribe(...) returns, drop the cached
+            // subject/connection immediately so a racing reconnect doesn't observe this
+            // disconnecting instance as reusable.
+            detachFromParent()
+        case .none, .finalizeWithoutSubscription, .disposeSubscription:
+            break
+        }
+
+        switch action {
+        case .none, .awaitSubscription:
             return
+        case .finalizeWithoutSubscription:
+            finalizeDisconnect()
+        case let .disposeSubscription(subscription):
+            subscription?.dispose()
+            finalizeDisconnect()
+        }
+    }
+
+    func finishDisconnect() {
+        finalizeDisconnect()
+    }
+
+    private func finalizeDisconnect() {
+        detachFromParent()
+
+        let (shouldSignalSubscriptionStart, shouldSignalDisconnect) = stateLock.performLocked { () -> (Bool, Bool) in
+            let shouldSignalSubscriptionStart = signalSubscriptionStartIfNeededLocked()
+            let shouldSignalDisconnect = signalDisconnectIfNeededLocked()
+            state = .disposed
+            disconnectingThread = nil
+            return (shouldSignalSubscriptionStart, shouldSignalDisconnect)
         }
 
-        if parent.connection === self {
-            parent.connection = nil
-            parent.subject = nil
+        if shouldSignalSubscriptionStart {
+            subscriptionStarted.leave()
         }
-        self.parent = nil
+        if shouldSignalDisconnect {
+            disconnected.leave()
+        }
+    }
 
-        subscription?.dispose()
-        subscription = nil
+    private func detachFromParent() {
+        lock.performLocked {
+            if let parent = self.parent, parent.connection === self {
+                parent.connection = nil
+                parent.subject = nil
+            }
+            self.parent = nil
+        }
+    }
+
+    private func signalSubscriptionStartIfNeededLocked() -> Bool {
+        guard !didSignalSubscriptionStart else {
+            return false
+        }
+
+        didSignalSubscriptionStart = true
+        return true
+    }
+
+    private func signalDisconnectIfNeededLocked() -> Bool {
+        guard !didSignalDisconnect else {
+            return false
+        }
+
+        didSignalDisconnect = true
+        return true
     }
 }
 
@@ -215,16 +393,46 @@ private final class ConnectableObservableAdapter<Subject: SubjectType>:
     }
 
     override func connect() -> Disposable {
-        lock.performLocked {
-            if let connection = self.connection {
+        while true {
+            let action = lock.performLocked { () -> (ConnectionType, Bool) in
+                if let connection = self.connection {
+                    return (connection, false)
+                }
+
+                let connection = Connection(parent: self, subjectObserver: self.lazySubject.asObserver(), lock: self.lock)
+                self.connection = connection
+                return (connection, true)
+            }
+
+            let (connection, shouldConnect) = action
+            if !shouldConnect {
+                switch connection.connectBehavior() {
+                case .waitForSubscriptionStart:
+                    connection.waitUntilSubscriptionStarts()
+                    continue
+                case .useExisting:
+                    return connection
+                case .waitForDisconnect:
+                    if connection.isDisconnectingOnCurrentThread() {
+                        return connection
+                    }
+                    connection.waitUntilDisconnected()
+                    continue
+                case .retry:
+                    continue
+                }
+            }
+
+            if !connection.beginSubscription() {
                 return connection
             }
 
-            let singleAssignmentDisposable = SingleAssignmentDisposable()
-            let connection = Connection(parent: self, subjectObserver: self.lazySubject.asObserver(), lock: self.lock, subscription: singleAssignmentDisposable)
-            self.connection = connection
             let subscription = self.source.subscribe(connection)
-            singleAssignmentDisposable.setDisposable(subscription)
+            if let subscriptionToDispose = connection.setSubscription(subscription) {
+                subscriptionToDispose.dispose()
+                connection.finishDisconnect()
+            }
+
             return connection
         }
     }
@@ -264,19 +472,52 @@ private final class RefCountSink<ConnectableSource: ConnectableObservableType, O
 
     func run() -> Disposable {
         let subscription = parent.source.subscribe(self)
-        parent.lock.lock(); defer { self.parent.lock.unlock() }
+        let shouldConnect = parent.lock.performLocked { () -> Bool? in
+            connectionIdSnapshot = parent.pendingConnectId ?? parent.connectionId
 
-        connectionIdSnapshot = parent.connectionId
+            if isDisposed {
+                return nil
+            }
 
-        if isDisposed {
+            if parent.count == 0 {
+                parent.count = 1
+                if let pendingConnectId = parent.pendingConnectId {
+                    connectionIdSnapshot = pendingConnectId
+                    return false
+                }
+
+                connectionIdSnapshot = parent.connectionId &+ 1
+                parent.connectionId = connectionIdSnapshot
+                parent.pendingConnectId = connectionIdSnapshot
+                return true
+            } else {
+                parent.count += 1
+                return false
+            }
+        }
+
+        guard let shouldConnect = shouldConnect else {
             return Disposables.create()
         }
 
-        if parent.count == 0 {
-            parent.count = 1
-            parent.connectableSubscription = parent.source.connect()
-        } else {
-            parent.count += 1
+        if shouldConnect {
+            let connectableSubscription = parent.source.connect()
+            let disposeImmediately = parent.lock.performLocked { () -> Disposable? in
+                if parent.pendingConnectId != connectionIdSnapshot {
+                    return connectableSubscription
+                }
+
+                parent.pendingConnectId = nil
+
+                if parent.connectionId != connectionIdSnapshot || parent.count == 0 {
+                    return connectableSubscription
+                }
+
+                parent.connectableSubscription = connectableSubscription
+                return nil
+            }
+
+            disposeImmediately?.dispose()
         }
 
         return Disposables.create {
@@ -311,6 +552,7 @@ private final class RefCountSink<ConnectableSource: ConnectableObservableType, O
                 let connection = parent.connectableSubscription
                 defer { connection?.dispose() }
                 parent.count = 0
+                parent.pendingConnectId = nil
                 parent.connectionId = parent.connectionId &+ 1
                 parent.connectableSubscription = nil
             }
@@ -327,6 +569,9 @@ private final class RefCount<ConnectableSource: ConnectableObservableType>: Prod
     // state
     fileprivate var count = 0
     fileprivate var connectionId: Int64 = 0
+    // While a connect call is still in flight, later subscribers share that attempt instead
+    // of starting another one that could race to install or dispose the upstream connection.
+    fileprivate var pendingConnectId: Int64?
     fileprivate var connectableSubscription = nil as Disposable?
 
     fileprivate let source: ConnectableSource

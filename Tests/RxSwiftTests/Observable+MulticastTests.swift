@@ -6,6 +6,7 @@
 //  Copyright © 2017 Krunoslav Zaher. All rights reserved.
 //
 
+import Dispatch
 import RxSwift
 import RxTest
 import XCTest
@@ -13,6 +14,64 @@ import XCTest
 class ObservableMulticastTest: RxTest {}
 
 extension ObservableMulticastTest {
+    func testMulticast_connectAfterDisposingPendingConnectionStartsFreshSubscribe() {
+        let firstSubscriptionStarted = expectation(description: "first subscription started")
+        let secondSubscriptionStarted = expectation(description: "second subscription started")
+        let firstConnectReturned = expectation(description: "first connect returned")
+        let reconnectReturned = expectation(description: "reconnect returned")
+
+        let subscribeLock = NSLock()
+        var subscribeCount = 0
+        let unblockSubscriptions = DispatchSemaphore(value: 0)
+
+        let xs = Observable<Int>.create { _ in
+            subscribeLock.lock()
+            subscribeCount += 1
+            let currentSubscribeCount = subscribeCount
+            subscribeLock.unlock()
+
+            switch currentSubscribeCount {
+            case 1:
+                firstSubscriptionStarted.fulfill()
+            case 2:
+                secondSubscriptionStarted.fulfill()
+            default:
+                break
+            }
+
+            unblockSubscriptions.wait()
+
+            return Disposables.create()
+        }
+
+        let publish = xs.publish()
+
+        DispatchQueue.global().async {
+            _ = publish.connect()
+            firstConnectReturned.fulfill()
+        }
+
+        wait(for: [firstSubscriptionStarted], timeout: 1.0)
+
+        DispatchQueue.global().async {
+            let sharedConnection = publish.connect()
+            sharedConnection.dispose()
+            _ = publish.connect()
+            reconnectReturned.fulfill()
+        }
+
+        wait(for: [secondSubscriptionStarted], timeout: 1.0)
+
+        subscribeLock.lock()
+        XCTAssertEqual(subscribeCount, 2)
+        subscribeLock.unlock()
+
+        unblockSubscriptions.signal()
+        unblockSubscriptions.signal()
+
+        wait(for: [firstConnectReturned, reconnectReturned], timeout: 1.0)
+    }
+
     func testMulticastWhileConnected_connectControlsSourceSubscription() {
         let scheduler = TestScheduler(initialClock: 0)
 
